@@ -2,14 +2,23 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: catchjunior-postgres
+    env_file: .env
     environment:
-      POSTGRES_DB: catchjunior
-      POSTGRES_USER: catchjunior
-      POSTGRES_PASSWORD: catchjunior
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - catchjunior-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
@@ -18,6 +27,13 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - catchjunior-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
@@ -25,20 +41,77 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - catchjunior-net
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: catchjunior-kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
-      - "9092:9092"
+      - "9092:9092"   # 호스트(백엔드/크롤러 로컬 실행) 접속용
+      - "29092:29092" # Docker 내부 컨테이너 접속용
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # PLAINTEXT  → 호스트에서 localhost:9092 로 접속
+      # INTERNAL   → 같은 Docker 네트워크 컨테이너에서 kafka:29092 로 접속
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+    networks:
+      - catchjunior-net
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Kafka 토픽 자동 생성 (raw-job, refined-job)
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: catchjunior-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - catchjunior-net
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-job --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic refined-job --partitions 1 --replication-factor 1
+      echo '✅ Kafka topics created: raw-job, refined-job'
+      "
+    restart: on-failure
+
+  # Kafka UI (개발 편의용 — 토픽/메시지 브라우저)
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: catchjunior-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8989:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: catchjunior
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - catchjunior-net
 
   elasticsearch:
     image: elasticsearch:8.13.0
@@ -47,10 +120,24 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.name=catchjunior-cluster
     ports:
       - "9200:9200"
     volumes:
       - es_data:/usr/share/elasticsearch/data
+    networks:
+      - catchjunior-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -vq '\"status\":\"red\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+networks:
+  catchjunior-net:
+    name: catchjunior-net
+    driver: bridge
 
 volumes:
   postgres_data:
