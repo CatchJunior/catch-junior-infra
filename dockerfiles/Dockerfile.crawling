@@ -1,0 +1,6 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY CatchJunior_Crawling/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY CatchJunior_Crawling/ .
+CMD ["scrapy", "crawl", "wanted"]

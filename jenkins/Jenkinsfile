@@ -1,0 +1,86 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_REGISTRY = 'your-registry'  // 도커 레지스트리 주소로 변경
+        EC2_HOST        = credentials('ec2-host')
+        EC2_USER        = 'ec2-user'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Test & Build - Back') {
+            steps {
+                dir('CatchJunior_Back') {
+                    sh './gradlew clean test build -x test'
+                }
+            }
+            post {
+                always {
+                    junit 'CatchJunior_Back/build/test-results/**/*.xml'
+                }
+            }
+        }
+
+        stage('Build & Push Docker Images') {
+            parallel {
+                stage('Back Image') {
+                    steps {
+                        sh """
+                            docker build -t ${DOCKER_REGISTRY}/catch-junior-back:${BUILD_NUMBER} \\
+                                -f dockerfiles/Dockerfile.back .
+                            docker push ${DOCKER_REGISTRY}/catch-junior-back:${BUILD_NUMBER}
+                        """
+                    }
+                }
+                stage('Front Image') {
+                    steps {
+                        sh """
+                            docker build -t ${DOCKER_REGISTRY}/catch-junior-front:${BUILD_NUMBER} \\
+                                -f dockerfiles/Dockerfile.front .
+                            docker push ${DOCKER_REGISTRY}/catch-junior-front:${BUILD_NUMBER}
+                        """
+                    }
+                }
+                stage('Crawling Image') {
+                    steps {
+                        sh """
+                            docker build -t ${DOCKER_REGISTRY}/catch-junior-crawling:${BUILD_NUMBER} \\
+                                -f dockerfiles/Dockerfile.crawling .
+                            docker push ${DOCKER_REGISTRY}/catch-junior-crawling:${BUILD_NUMBER}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to EC2') {
+            steps {
+                sshagent(['ec2-ssh-key']) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} '
+                            cd /home/ec2-user/catchjunior &&
+                            export BUILD_NUMBER=${BUILD_NUMBER} &&
+                            docker compose pull &&
+                            docker compose up -d --remove-orphans
+                        '
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "배포 성공: Build #${BUILD_NUMBER}"
+        }
+        failure {
+            echo "배포 실패: Build #${BUILD_NUMBER}"
+        }
+    }
+}
