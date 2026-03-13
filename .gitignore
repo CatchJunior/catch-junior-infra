@@ -1,0 +1,34 @@
+# Secrets & credentials
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+.env
+.env.*
+
+# Jenkins
+jenkins_home/
+workspace/
+
+# Docker
+*.tar
+
+# Terraform (if used later)
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!example.tfvars
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
